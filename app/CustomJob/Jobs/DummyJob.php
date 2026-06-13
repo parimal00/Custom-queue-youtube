@@ -2,17 +2,16 @@
 
 namespace App\CustomJob\Jobs;
 
+use Exception;
 use Illuminate\Support\Facades\Log;
 
 class DummyJob
 {
 
-    public function __construct()
-    {
-    }
+    public function __construct() {}
 
     public function handle()
     {
-        Log::info("Job is processed");
+        throw new Exception("test exception");
     }
 }

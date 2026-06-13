@@ -18,36 +18,66 @@ class CustomQueueWork extends Command
     {
         $this->info("Queue worker is runninng");
 
-        while(true){
-            $job = DB::table('custom_jobs')
-            ->where('available_at', '<=', time())
-            ->whereNull('reserved_at')
-            ->first();
+        while (true) {
+            try {
+                $job = DB::table('custom_jobs')
+                    ->where('available_at', '<=', time())
+                    ->whereNull('reserved_at')
+                    ->first();
 
-            if(!$job){
-                sleep(1);
-                continue;
+                if (!$job) {
+                    sleep(1);
+                    continue;
+                }
+
+                DB::table('custom_jobs')
+                    ->where('id', $job->id)
+                    ->update([
+                        'reserved_at' => time(),
+                        'attempts' => $job->attempts + 1
+                    ]);
+
+                $this->comment('Processing job' . $job->id);
+
+                $payload = $job->payload;
+                $unserializedJob = unserialize($payload);
+
+                $unserializedJob->handle();
+
+                DB::table('custom_jobs')
+                    ->where('id', $job->id)
+                    ->delete();
+
+                $this->info('Job processed ' . $job->id);
+            } catch (\Throwable $e) {
+                $this->error("Job failed");
+
+                if ($job->attempts >= 3) {
+                    DB::table("failed_custom_jobs")
+                        ->insert([
+                            'connection' => 'database',
+                            'queue' => ' default',
+                            'payload' => $job->payload,
+                            'exception' => (string) $e,
+                            'failed_at' => now()
+                        ]);
+
+                    DB::table("custom_jobs")
+                        ->where('id', $job->id)
+                        ->delete();
+
+                    $this->info("Job moved to failed queue");
+                } else {
+                    DB::table("custom_jobs")
+                        ->where('id', $job->id)
+                        ->update([
+                            'reserved_at' => null,
+                            'available_at' => time() + 3,
+                        ]);
+
+                    $this->info("Job released back to queue");
+                }
             }
-
-            DB::table('custom_jobs')
-            ->where('id', $job->id)
-            ->update([
-                'reserved_at' => time(),
-                'attempts' => $job->attempts + 1
-            ]);
-
-           $this->comment('Processing job'. $job->id);
-
-           $payload = $job->payload;
-           $unserializedJob = unserialize($payload);
-
-           $unserializedJob->handle();
-
-           DB::table('custom_jobs')
-           ->where('id', $job->id)
-           ->delete();
-
-           $this->info('Job processed '. $job->id);
         }
     }
 }
