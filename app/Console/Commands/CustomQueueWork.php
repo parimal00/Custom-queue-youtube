@@ -20,22 +20,31 @@ class CustomQueueWork extends Command
 
         while (true) {
             try {
-                $job = DB::table('custom_jobs')
-                    ->where('available_at', '<=', time())
-                    ->whereNull('reserved_at')
-                    ->first();
+                $job =  DB::transaction(function () {
+                    $job = DB::table('custom_jobs')
+                        ->where('available_at', '<=', time())
+                        ->whereNull('reserved_at')
+                        ->lockForUpdate()
+                        ->first();
+
+                    if (!$job) {
+                        return null;
+                    }
+
+                    DB::table('custom_jobs')
+                        ->where('id', $job->id)
+                        ->update([
+                            'reserved_at' => time(),
+                            'attempts' => $job->attempts + 1
+                        ]);
+
+                    return $job;
+                });
 
                 if (!$job) {
                     sleep(1);
                     continue;
                 }
-
-                DB::table('custom_jobs')
-                    ->where('id', $job->id)
-                    ->update([
-                        'reserved_at' => time(),
-                        'attempts' => $job->attempts + 1
-                    ]);
 
                 $this->comment('Processing job' . $job->id);
 

@@ -12,6 +12,6 @@ class DummyJob
 
     public function handle()
     {
-        throw new Exception("test exception");
+        Log::info("job run");
     }
 }
