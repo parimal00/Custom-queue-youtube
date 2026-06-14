@@ -16,55 +16,35 @@ class CustomQueueWork extends Command
      */
     public function handle()
     {
-        // Parse the comma-separated priority string into an array
-        $queues = explode(',', $this->argument('queue'));
-
-        $this->info("Queue worker is running for streams: " . implode(', ', $queues));
-
         while (true) {
-            $job = null;
-            $currentAttempt = 0;
-
             try {
-                // Loop through each queue stream in strict order of priority
-                foreach ($queues as $queueName) {
-                    $job = DB::transaction(function () use ($queueName, &$currentAttempt) {
-                        $foundJob = DB::table('custom_jobs')
-                            ->where('queue', trim($queueName))
-                            ->where('available_at', '<=', time())
-                            ->whereNull('reserved_at')
-                            ->lockForUpdate()
-                            ->first();
+                $job =  DB::transaction(function () {
+                    $job = DB::table('custom_jobs')
+                        ->where('available_at', '<=', time())
+                        ->whereNull('reserved_at')
+                        ->lockForUpdate()
+                        ->first();
 
-                        if (!$foundJob) {
-                            return null;
-                        }
-
-                        // Track current execution attempt correctly
-                        $currentAttempt = $foundJob->attempts + 1;
-
-                        DB::table('custom_jobs')
-                            ->where('id', $foundJob->id)
-                            ->update([
-                                'reserved_at' => time(),
-                                'attempts' => $currentAttempt
-                            ]);
-
-                        return $foundJob;
-                    });
-
-                    // Break out of the priority loop early if a job was acquired
-                    if ($job) {
-                        break;
+                    if (!$job) {
+                        return null;
                     }
-                }
+
+                    DB::table('custom_jobs')
+                        ->where('id', $job->id)
+                        ->update([
+                            'reserved_at' => time(),
+                            'attempts' => $job->attempts + 1
+                        ]);
+
+                    return $job;
+                });
 
                 if (!$job) {
                     sleep(1);
                     continue;
                 }
 
-                $this->comment("Processing job {$job->id} from queue [{$job->queue}]");
+                $this->comment('Processing job' . $job->id);
 
                 $payload = $job->payload;
                 $unserializedJob = unserialize($payload);
@@ -80,8 +60,7 @@ class CustomQueueWork extends Command
                 $this->error("Job failed " . ($job->id ?? ''));
 
                 if ($job) {
-                    // Check against the updated execution counter
-                    if ($currentAttempt >= 3) {
+                    if ($job->attempts >= 3) {
                         DB::table("failed_custom_jobs")
                             ->insert([
                                 'connection' => 'database',
