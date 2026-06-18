@@ -7,8 +7,8 @@ use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
-#[Signature('app:custom-queue-work')]
-#[Description('Command description')]
+#[Signature('app:custom-queue-work {queue=default : The queues to process in order of priority}')]
+#[Description('Run custom queue worker with priority queue routing')]
 class CustomQueueWork extends Command
 {
     /**
@@ -16,37 +16,55 @@ class CustomQueueWork extends Command
      */
     public function handle()
     {
-        $this->info("Queue worker is runninng");
+        // Parse the comma-separated priority string into an array
+        $queues = explode(',', $this->argument('queue'));
+
+        $this->info("Queue worker is running for streams: " . implode(', ', $queues));
 
         while (true) {
+            $job = null;
+            $currentAttempt = 0;
+
             try {
-                $job =  DB::transaction(function () {
-                    $job = DB::table('custom_jobs')
-                        ->where('available_at', '<=', time())
-                        ->whereNull('reserved_at')
-                        ->lockForUpdate()
-                        ->first();
+                // Loop through each queue stream in strict order of priority
+                foreach ($queues as $queueName) {
+                    $job = DB::transaction(function () use ($queueName, &$currentAttempt) {
+                        $foundJob = DB::table('custom_jobs')
+                            ->where('queue', trim($queueName))
+                            ->where('available_at', '<=', time())
+                            ->whereNull('reserved_at')
+                            ->lockForUpdate()
+                            ->first();
 
-                    if (!$job) {
-                        return null;
+                        if (!$foundJob) {
+                            return null;
+                        }
+
+                        // Track current execution attempt correctly
+                        $currentAttempt = $foundJob->attempts + 1;
+
+                        DB::table('custom_jobs')
+                            ->where('id', $foundJob->id)
+                            ->update([
+                                'reserved_at' => time(),
+                                'attempts' => $currentAttempt
+                            ]);
+
+                        return $foundJob;
+                    });
+
+                    // Break out of the priority loop early if a job was acquired
+                    if ($job) {
+                        break;
                     }
-
-                    DB::table('custom_jobs')
-                        ->where('id', $job->id)
-                        ->update([
-                            'reserved_at' => time(),
-                            'attempts' => $job->attempts + 1
-                        ]);
-
-                    return $job;
-                });
+                }
 
                 if (!$job) {
                     sleep(1);
                     continue;
                 }
 
-                $this->comment('Processing job' . $job->id);
+                $this->comment("Processing job {$job->id} from queue [{$job->queue}]");
 
                 $payload = $job->payload;
                 $unserializedJob = unserialize($payload);
@@ -59,32 +77,35 @@ class CustomQueueWork extends Command
 
                 $this->info('Job processed ' . $job->id);
             } catch (\Throwable $e) {
-                $this->error("Job failed");
+                $this->error("Job failed " . ($job->id ?? ''));
 
-                if ($job->attempts >= 3) {
-                    DB::table("failed_custom_jobs")
-                        ->insert([
-                            'connection' => 'database',
-                            'queue' => ' default',
-                            'payload' => $job->payload,
-                            'exception' => (string) $e,
-                            'failed_at' => now()
-                        ]);
+                if ($job) {
+                    // Check against the updated execution counter
+                    if ($currentAttempt >= 3) {
+                        DB::table("failed_custom_jobs")
+                            ->insert([
+                                'connection' => 'database',
+                                'queue' => $job->queue,
+                                'payload' => $job->payload,
+                                'exception' => (string) $e,
+                                'failed_at' => now()
+                            ]);
 
-                    DB::table("custom_jobs")
-                        ->where('id', $job->id)
-                        ->delete();
+                        DB::table("custom_jobs")
+                            ->where('id', $job->id)
+                            ->delete();
 
-                    $this->info("Job moved to failed queue");
-                } else {
-                    DB::table("custom_jobs")
-                        ->where('id', $job->id)
-                        ->update([
-                            'reserved_at' => null,
-                            'available_at' => time() + 3,
-                        ]);
+                        $this->info("Job moved to failed queue");
+                    } else {
+                        DB::table("custom_jobs")
+                            ->where('id', $job->id)
+                            ->update([
+                                'reserved_at' => null,
+                                'available_at' => time() + 3,
+                            ]);
 
-                    $this->info("Job released back to queue");
+                        $this->info("Job released back to queue");
+                    }
                 }
             }
         }
