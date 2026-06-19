@@ -16,28 +16,42 @@ class CustomQueueWork extends Command
      */
     public function handle()
     {
+        $queues = explode(",", $this->argument('queue'));
+
         while (true) {
+            $job = null;
+            $currentAttempt = 0;
+
             try {
-                $job =  DB::transaction(function () {
-                    $job = DB::table('custom_jobs')
-                        ->where('available_at', '<=', time())
-                        ->whereNull('reserved_at')
-                        ->lockForUpdate()
-                        ->first();
+                foreach ($queues as $queueName) {
+                    $job =  DB::transaction(function () use ($queueName, &$currentAttempt) {
+                        $foundJob = DB::table('custom_jobs')
+                            ->where('queue', trim($queueName))
+                            ->where('available_at', '<=', time())
+                            ->whereNull('reserved_at')
+                            ->lockForUpdate()
+                            ->first();
 
-                    if (!$job) {
-                        return null;
+                        if (!$foundJob) {
+                            return null;
+                        }
+
+                        $currentAttempt = $foundJob->attempts + 1;
+
+                        DB::table('custom_jobs')
+                            ->where('id', $foundJob->id)
+                            ->update([
+                                'reserved_at' => time(),
+                                'attempts' => $currentAttempt
+                            ]);
+
+                        return $foundJob;
+                    });
+
+                    if ($job) {
+                        break;
                     }
-
-                    DB::table('custom_jobs')
-                        ->where('id', $job->id)
-                        ->update([
-                            'reserved_at' => time(),
-                            'attempts' => $job->attempts + 1
-                        ]);
-
-                    return $job;
-                });
+                }
 
                 if (!$job) {
                     sleep(1);
@@ -60,7 +74,7 @@ class CustomQueueWork extends Command
                 $this->error("Job failed " . ($job->id ?? ''));
 
                 if ($job) {
-                    if ($job->attempts >= 3) {
+                    if ($currentAttempt >= 3) {
                         DB::table("failed_custom_jobs")
                             ->insert([
                                 'connection' => 'database',

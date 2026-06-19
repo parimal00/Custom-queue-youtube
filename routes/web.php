@@ -11,5 +11,5 @@ Route::get('/', function () {
 
 Route::get('test-job', function () {
     $job = new DummyJob();
-    CustomJob::push($job);
+    CustomJob::push($job, 'high');
 });
