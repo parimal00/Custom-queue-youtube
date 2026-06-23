@@ -10,6 +10,5 @@ Route::get('/', function () {
 
 
 Route::get('test-job', function () {
-    $job = new DummyJob();
-    CustomJob::push($job, 'high');
+    DummyJob::dispatch()->onQueue('high')->delay(10);
 });
